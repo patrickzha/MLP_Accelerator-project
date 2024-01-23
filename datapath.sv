@@ -1,71 +1,9 @@
-module top #(
-    parameter WORD_SIZE = 8,
-    parameter M = 16,
-    parameter N = 16,
-    parameter ACTIVATION = 2,
-    parameter WEIGHTS_FILE = "weights_16_16.mem"
-) (
-    input  logic clk, n_rst, init,
-    input  logic [WORD_SIZE-1:0] inputs [N-1:0],
-    output logic ready,
-    output logic [WORD_SIZE-1:0] outputs[N-1:0]
-);
-
-logic write_en, start, ctrl, out_valid;
-logic[$clog2(M):0]counter;
-logic[WORD_SIZE-1:0] weights[(N+1)*N-1:0];
-
-datapath #(
-    .WORD_SIZE(WORD_SIZE),
-    .N(N),
-    .ACTIVATION(ACTIVATION)
-) MLP_DP (
-    .clk(clk), 
-    .n_rst(n_rst), 
-    .write_en(write_en), 
-    .start(start),
-    .ctrl(ctrl), 
-    .inputs(inputs),
-    .weights(weights),
-    .out_valid(out_valid),
-    .outputs(outputs)
-);
-
-FSM #(
-    .M(M)
-) MLP_FSM (
-    .clk(clk), 
-    .n_rst(n_rst), 
-    .init(init), 
-    .out_valid(out_valid), 
-    .ctrl(ctrl), 
-    .start(start), 
-    .write_en(write_en),
-    .ready(ready),
-    .counter(counter)
-);
-
-weights_mem #(
-    .WORD_SIZE(WORD_SIZE),
-    .N(N),
-    .M(M),
-    .WEIGHTS_FILE(WEIGHTS_FILE)
-) MLP_WM (
-    .clk(clk),
-    .addr(counter),
-    .weights(weights)
-);
-
-endmodule
-
-
-
 module datapath #(
     parameter WORD_SIZE = 8,
     parameter N = 2,
     parameter ACTIVATION = 2
 ) (
-    input  logic clk, n_rst, write_en, start,
+    input  logic clk, n_rst, write_en, start, neuron_rst,
     input  logic ctrl, 
     input  logic [WORD_SIZE-1:0] inputs  [N-1:0], weights [(N+1)*N-1:0],
     output logic out_valid,
@@ -80,16 +18,26 @@ assign out_valid = &neuron_valid;
 
 assign outputs = prev_result;
 
+logic [WORD_SIZE-1:0] inputNeuron [N:0];
+
 genvar i;
+
+always_comb begin
+    for (int j = 0; j < N; j++) begin
+        inputNeuron[j] = data[j];
+    end
+
+    inputNeuron[N] = bias;
+end
 
 generate;
     for (i = 0; i < N; i++) begin
         lab2 #(.N(N+1), .K(N+1), .width(WORD_SIZE), .activation(ACTIVATION)) neuron (
             .clk(clk),
-            .reset(n_rst),
+            .reset(n_rst & neuron_rst),
             .start(start),
             .w(weights[(N+1)*(i+1)-1:N*i+i]),
-            .x({data, bias}),
+            .x(inputNeuron),
             .o(prev_result[i]),
             .out_valid(neuron_valid[i])
         );
@@ -114,7 +62,7 @@ module FSM #(
     parameter M = 2
 ) (
     input  logic clk, n_rst, init, out_valid, 
-    output logic ctrl, start, write_en, ready,
+    output logic ctrl, start, write_en, ready, neuron_rst,
     output logic [$clog2(M):0] counter
 );
 
@@ -127,7 +75,7 @@ module FSM #(
         else state <= nextstate;
     end
 
-    parameter START_DEL = 1;
+    parameter START_DEL = 2;
     logic next_start[START_DEL:0];
 
     always_ff @(posedge clk or negedge n_rst) begin
@@ -139,6 +87,11 @@ module FSM #(
             for (int i = 1; i <= START_DEL; i++) begin
                 next_start[i] <= next_start[i-1]; 
             end 
+        end
+        if(next_start[0]) 
+            neuron_rst <= 0;
+        else begin
+            neuron_rst <= 1;    
         end
     end
 
@@ -179,7 +132,7 @@ module FSM #(
                 ready = 1'b0;
             end
             OP: begin
-                ctrl = 1'b1;
+                ctrl = out_valid;
                 start = next_start[START_DEL];
                 write_en = 1'b0;
                 ready = 1'b0;
@@ -218,3 +171,64 @@ end
     
 endmodule
 
+module top #(
+    parameter WORD_SIZE = 8,
+    parameter N = 2,
+    parameter M = 2,
+    parameter ACTIVATION = 2,
+    parameter WEIGHTS_FILE = "weights.dat"
+) (
+    input  logic clk, n_rst, init,
+    input  logic [WORD_SIZE-1:0] inputs [N-1:0],
+    output logic ready,
+    output logic [WORD_SIZE-1:0] outputs[N-1:0]
+);
+
+logic write_en, start, ctrl, out_valid, neuron_rst;
+logic[$clog2(M):0]counter;
+logic[WORD_SIZE-1:0] weights[(N+1)*N-1:0];
+
+datapath #(
+    .WORD_SIZE(WORD_SIZE),
+    .N(N),
+    .ACTIVATION(ACTIVATION)
+) MLP_DP (
+    .clk(clk), 
+    .n_rst(n_rst), 
+    .write_en(write_en), 
+    .start(start),
+    .ctrl(ctrl), 
+    .inputs(inputs),
+    .weights(weights),
+    .out_valid(out_valid),
+    .outputs(outputs),
+    .neuron_rst(neuron_rst)
+);
+
+FSM #(
+    .M(M)
+) MLP_FSM (
+    .clk(clk), 
+    .n_rst(n_rst), 
+    .init(init), 
+    .out_valid(out_valid), 
+    .ctrl(ctrl), 
+    .start(start), 
+    .write_en(write_en),
+    .ready(ready),
+    .counter(counter),
+    .neuron_rst(neuron_rst)
+);
+
+weights_mem #(
+    .WORD_SIZE(WORD_SIZE),
+    .N(N),
+    .M(M),
+    .WEIGHTS_FILE(WEIGHTS_FILE)
+) MLP_WM (
+    .clk(clk),
+    .addr(counter),
+    .weights(weights)
+);
+
+endmodule
